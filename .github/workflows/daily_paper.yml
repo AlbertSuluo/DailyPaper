@@ -1,0 +1,42 @@
+name: Daily Paper Tracker
+
+on:
+  schedule:
+    - cron: '0 1 * * *'  # 每天 UTC 01:00（北京时间 09:00）
+  workflow_dispatch:       # 支持在 GitHub 网页手动触发
+
+permissions:
+  contents: write  # 允许将 seen_papers.txt 写回仓库
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run paper tracker
+        env:
+          S2_API_KEY: ${{ secrets.S2_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: https://models.inference.ai.azure.com
+          LLM_MODEL: gpt-4o-mini
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+        run: python paper_tracker.py
+
+      - name: Commit updated seen_papers.txt
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add config/seen_papers.txt
+          git diff --staged --quiet || git commit -m "chore: update seen papers [skip ci]"
+          git push
