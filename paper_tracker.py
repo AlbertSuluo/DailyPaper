@@ -1,11 +1,15 @@
 import os
 import requests
-from openai import OpenAI
+from dotenv import load_dotenv
 
-# --- 配置区 (这些将配置在 GitHub Secrets 中) ---
-S2_API_KEY = os.getenv("S2_API_KEY")
-LLM_API_KEY = os.getenv("LLM_API_KEY")
-SERVERCHAN_KEY = os.getenv("SERVERCHAN_KEY")
+load_dotenv()
+
+# --- 配置区 (通过 .env 文件或 GitHub Secrets 配置) ---
+S2_API_KEY = os.getenv("S2_API_KEY") or ""
+LLM_API_KEY = os.getenv("LLM_API_KEY") or ""
+LLM_BASE_URL = os.getenv("LLM_BASE_URL") or "https://api.deepseek.com"
+LLM_MODEL = os.getenv("LLM_MODEL") or "deepseek-chat"
+SERVERCHAN_KEY = os.getenv("SERVERCHAN_KEY") or ""
 
 HISTORY_FILE = "config/seen_papers.txt"
 
@@ -38,7 +42,7 @@ def read_seed_papers(file_path):
 def get_paper_recommendations():
     """通过 Semantic Scholar 寻找相关新论文"""
     url = "https://api.semanticscholar.org/recommendations/v1/papers"
-    headers = {"x-api-key": S2_API_KEY}
+    headers = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
 
     positive_papers = read_seed_papers("config/seed_paper_positive.csv")
     negative_papers = read_seed_papers("config/seed_paper_negative.csv")
@@ -101,9 +105,10 @@ def get_paper_recommendations():
         paper_ids = [p["paperId"] for p in top_new_papers]
         batch_url = "https://api.semanticscholar.org/graph/v1/paper/batch"
         batch_params = {"fields": "paperId,tldr"}
+        batch_headers = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
 
         batch_res = requests.post(
-            batch_url, json={"ids": paper_ids}, headers=headers, params=batch_params
+            batch_url, json={"ids": paper_ids}, headers=batch_headers, params=batch_params
         )
 
         if batch_res.status_code == 200:
@@ -128,8 +133,12 @@ def get_paper_recommendations():
 
 
 def summarize_papers_with_llm(papers):
-    """调用大模型进行总结"""
-    client = OpenAI(api_key=LLM_API_KEY, base_url="https://api.deepseek.com")
+    """调用大模型进行总结（若无 LLM_API_KEY 则仅推送摘要）"""
+    if LLM_API_KEY:
+        from openai import OpenAI
+        client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+    else:
+        client = None
 
     report_content = ""
     for idx, paper in enumerate(papers):
@@ -167,7 +176,8 @@ def summarize_papers_with_llm(papers):
         else:
             authors = ", ".join([author.get("name", "未知") for author in authors_list])
 
-        prompt = f"""
+        if client:
+            prompt = f"""
 你是一个严谨的学术专家。请基于以下论文信息，提取核心内容并转化为中文。
 要求：
 1. 极其精简、具体，拒绝空泛的套话，保留专业术语。
@@ -181,12 +191,13 @@ def summarize_papers_with_llm(papers):
 TLDR: {tldr_text or "无"}
 摘要原文: {abstract_text}
 """
+            response = client.chat.completions.create(
+                model=LLM_MODEL, messages=[{"role": "user", "content": prompt}]
+            )
+            summary = response.choices[0].message.content
+        else:
+            summary = "（未配置 LLM_API_KEY，跳过 AI 总结）"
 
-        response = client.chat.completions.create(
-            model="deepseek-chat", messages=[{"role": "user", "content": prompt}]
-        )
-
-        summary = response.choices[0].message.content
         report_content += (
             f"## {idx+1}\n[{title}]({url})\n*{venue_name}* | {authors} | {date}\n\n"
             f"**TLDR:** {tldr_text}\n\n"
@@ -210,10 +221,14 @@ def update_history(papers):
 
 
 def push_to_wechat(content):
-    """通过 Server 酱 推送到微信"""
+    """通过 Server 酢 推送到微信"""
+    if not SERVERCHAN_KEY:
+        print("错误：未设置 SERVERCHAN_KEY，无法推送。")
+        return
     url = f"https://sctapi.ftqq.com/{SERVERCHAN_KEY}.send"
     data = {"title": "📚 你的每日文献追踪晨报到了！", "desp": content}
-    requests.post(url, data=data)
+    resp = requests.post(url, data=data)
+    print(f"推送结果: {resp.status_code} - {resp.text[:200]}")
 
 
 if __name__ == "__main__":
